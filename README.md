@@ -1,7 +1,7 @@
 ![Bipedal Robot Simulation](https://github.com/Mahdi-Torabi1997/Mujoco-simulation/blob/main/mujoco.png?raw=true)
 
-## Bipedal Robot Simulation
-This project showcases a bipedal robot simulation using MuJoCo. The robot walks using a simple controller and finite state machines (FSMs) to manage its gait.
+## Bipedal Simulation
+This project showcases a bipedal simulation using MuJoCo. The robot walks using a simple controller and finite state machines (FSMs) to manage its gait.
 ## Biped Design
 ## Joints and Actuators
 Hip Joint (Pin Joint): Allows the upper leg to swing.
