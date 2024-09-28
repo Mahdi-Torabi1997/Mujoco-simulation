@@ -7,239 +7,201 @@ import os
 
 # Path to the MuJoCo XML model file
 xml_path = 'biped.xml'
-simend = 30  # Simulation end time in seconds
+simulation_duration = 30  # Simulation duration in seconds
+current_step = 0
 
-step_no = 0
-
-# Finite State Machine (FSM) states for the legs and knees
+# FSM states for legs and knees
 FSM_LEG1_SWING = 0
 FSM_LEG2_SWING = 1
-
 FSM_KNEE1_STANCE = 0
 FSM_KNEE1_RETRACT = 1
-
 FSM_KNEE2_STANCE = 0
 FSM_KNEE2_RETRACT = 1
 
-# Initial FSM states
+# Initialize FSM state variables
 fsm_hip = FSM_LEG2_SWING
 fsm_knee1 = FSM_KNEE1_STANCE
 fsm_knee2 = FSM_KNEE2_STANCE
 
-# Variables for mouse interaction
+# Mouse interaction variables
 button_left = False
 button_middle = False
 button_right = False
 lastx = 0
 lasty = 0
 
+# ---------------------------------------------------------
+# Custom functions for controlling the robot and simulation
+# ---------------------------------------------------------
+
 def controller(model, data):
     """
-    This function implements a controller that mimics the forces of a fixed joint before release.
-    It adjusts the control inputs to the robot's joints based on the FSM states and sensory data.
+    Implements the finite state machine for controlling the robot's legs and knees
+    based on the state of the robot. The legs and knees go through different phases:
+    stance, swing, and retract.
     """
-    global fsm_hip
-    global fsm_knee1
-    global fsm_knee2
+    global fsm_hip, fsm_knee1, fsm_knee2
 
     # State Estimation
     quat_leg1 = data.xquat[1, :]
-    euler_leg1 = quat2euler(quat_leg1)
-    abs_leg1 = -euler_leg1[1]
-    pos_foot1 = data.xpos[2, :]
-
     quat_leg2 = data.xquat[3, :]
+    euler_leg1 = quat2euler(quat_leg1)
     euler_leg2 = quat2euler(quat_leg2)
-    abs_leg2 = -euler_leg2[1]
+    pos_foot1 = data.xpos[2, :]
     pos_foot2 = data.xpos[4, :]
 
-    # Transition check for FSM states
+    abs_leg1 = -euler_leg1[1]
+    abs_leg2 = -euler_leg2[1]
+
+    # Finite State Machine logic for leg swing control
     if fsm_hip == FSM_LEG2_SWING and pos_foot2[2] < 0.05 and abs_leg1 < 0.0:
         fsm_hip = FSM_LEG1_SWING
-    if fsm_hip == FSM_LEG1_SWING and pos_foot1[2] < 0.05 and abs_leg2 < 0.0:
+    elif fsm_hip == FSM_LEG1_SWING and pos_foot1[2] < 0.05 and abs_leg2 < 0.0:
         fsm_hip = FSM_LEG2_SWING
 
+    # FSM logic for knee retraction control
     if fsm_knee1 == FSM_KNEE1_STANCE and pos_foot2[2] < 0.05 and abs_leg1 < 0.0:
         fsm_knee1 = FSM_KNEE1_RETRACT
-    if fsm_knee1 == FSM_KNEE1_RETRACT and abs_leg1 > 0.1:
+    elif fsm_knee1 == FSM_KNEE1_RETRACT and abs_leg1 > 0.1:
         fsm_knee1 = FSM_KNEE1_STANCE
 
     if fsm_knee2 == FSM_KNEE2_STANCE and pos_foot1[2] < 0.05 and abs_leg2 < 0.0:
         fsm_knee2 = FSM_KNEE2_RETRACT
-    if fsm_knee2 == FSM_KNEE2_RETRACT and abs_leg2 > 0.1:
+    elif fsm_knee2 == FSM_KNEE2_RETRACT and abs_leg2 > 0.1:
         fsm_knee2 = FSM_KNEE2_STANCE
 
-    # Control logic based on FSM states
-    if fsm_hip == FSM_LEG1_SWING:
-        data.ctrl[0] = -0.5
-    if fsm_hip == FSM_LEG2_SWING:
-        data.ctrl[0] = 0.5
-
-    if fsm_knee1 == FSM_KNEE1_STANCE:
-        data.ctrl[2] = 0.0
-    if fsm_knee1 == FSM_KNEE1_RETRACT:
-        data.ctrl[2] = -0.25
-
-    if fsm_knee2 == FSM_KNEE2_STANCE:
-        data.ctrl[4] = 0.0
-    if fsm_knee2 == FSM_KNEE2_RETRACT:
-        data.ctrl[4] = -0.25
+    # Control logic: apply torques based on FSM states
+    data.ctrl[0] = -0.5 if fsm_hip == FSM_LEG1_SWING else 0.5
+    data.ctrl[2] = 0.0 if fsm_knee1 == FSM_KNEE1_STANCE else -0.25
+    data.ctrl[4] = 0.0 if fsm_knee2 == FSM_KNEE2_STANCE else -0.25
 
 def init_controller(model, data):
     """
-    Initializes the controller by setting initial positions and control inputs.
+    Initializes the controller by setting initial joint positions and control inputs.
     """
     data.qpos[4] = 0.5
     data.ctrl[0] = data.qpos[4]
 
 def quat2euler(quat):
     """
-    Converts quaternion to Euler angles.
+    Converts quaternion to Euler angles (roll, pitch, yaw).
     """
-    # SciPy defines quaternion as [x, y, z, w]
-    # MuJoCo defines quaternion as [w, x, y, z]
-    _quat = np.concatenate([quat[1:], quat[:1]])
+    _quat = np.concatenate([quat[1:], quat[:1]])  # MuJoCo uses [w, x, y, z]
     r = R.from_quat(_quat)
+    return r.as_euler('xyz', degrees=False)
 
-    # roll-pitch-yaw is the same as rotating w.r.t the x, y, z axis in the world frame
-    euler = r.as_euler('xyz', degrees=False)
-    return euler
+# ---------------------------------------------------------
+# Utility functions for mouse and keyboard interaction
+# ---------------------------------------------------------
 
-def keyboard(window, key, scancode, act, mods):
+def keyboard(window, key, scancode, action, mods):
     """
-    Resets the simulation when the BACKSPACE key is pressed.
+    Resets the simulation if the BACKSPACE key is pressed.
     """
-    if act == glfw.PRESS and key == glfw.KEY_BACKSPACE:
+    if action == glfw.PRESS and key == glfw.KEY_BACKSPACE:
         mj.mj_resetData(model, data)
         mj.mj_forward(model, data)
 
-def mouse_button(window, button, act, mods):
+def mouse_button(window, button, action, mods):
     """
-    Updates the state of mouse buttons.
+    Tracks mouse button states (left, middle, right).
     """
     global button_left, button_middle, button_right
-    button_left = (glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS)
-    button_middle = (glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_MIDDLE) == glfw.PRESS)
-    button_right = (glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS)
+    button_left = glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
+    button_middle = glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_MIDDLE) == glfw.PRESS
+    button_right = glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS
     glfw.get_cursor_pos(window)
 
 def mouse_move(window, xpos, ypos):
     """
-    Handles mouse movement for camera control.
+    Moves the camera based on mouse movement.
     """
     global lastx, lasty
-    dx = xpos - lastx
-    dy = ypos - lasty
-    lastx = xpos
-    lasty = ypos
+    dx, dy = xpos - lastx, ypos - lasty
+    lastx, lasty = xpos, ypos
 
-    if (not button_left) and (not button_middle) and (not button_right):
+    if not (button_left or button_middle or button_right):
         return
 
     width, height = glfw.get_window_size(window)
-    PRESS_LEFT_SHIFT = glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
-    PRESS_RIGHT_SHIFT = glfw.get_key(window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS
-    mod_shift = (PRESS_LEFT_SHIFT or PRESS_RIGHT_SHIFT)
+    mod_shift = glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
 
-    if button_right:
-        if mod_shift:
-            action = mj.mjtMouse.mjMOUSE_MOVE_H
-        else:
-            action = mj.mjtMouse.mjMOUSE_MOVE_V
-    elif button_left:
-        if mod_shift:
-            action = mj.mjtMouse.mjMOUSE_ROTATE_H
-        else:
-            action = mj.mjtMouse.mjMOUSE_ROTATE_V
-    else:
-        action = mj.mjtMouse.mjMOUSE_ZOOM
+    action = mj.mjtMouse.mjMOUSE_ZOOM if button_middle else (
+        mj.mjtMouse.mjMOUSE_MOVE_H if button_right and mod_shift else mj.mjtMouse.mjMOUSE_MOVE_V)
 
     mj.mjv_moveCamera(model, action, dx/height, dy/height, scene, cam)
 
 def scroll(window, xoffset, yoffset):
     """
-    Handles scroll events for zooming the camera.
+    Zooms the camera in and out using scroll.
     """
     action = mj.mjtMouse.mjMOUSE_ZOOM
     mj.mjv_moveCamera(model, action, 0.0, -0.05 * yoffset, scene, cam)
 
-# Get the full path to the XML model file
+# ---------------------------------------------------------
+# Simulation Initialization and Execution
+# ---------------------------------------------------------
+
+# Set the path for the MuJoCo XML model
 dirname = os.path.dirname(__file__)
-abspath = os.path.join(dirname + "/" + xml_path)
+abspath = os.path.join(dirname, xml_path)
 xml_path = abspath
 
-# Initialize MuJoCo data structures
-model = mj.MjModel.from_xml_path(xml_path)  # MuJoCo model
-data = mj.MjData(model)  # MuJoCo data
-cam = mj.MjvCamera()  # Abstract camera
-opt = mj.MjvOption()  # Visualization options
+# Load MuJoCo model and create simulation context
+model = mj.MjModel.from_xml_path(xml_path)
+data = mj.MjData(model)
+cam = mj.MjvCamera()
+opt = mj.MjvOption()
 
-# Initialize GLFW, create a window, make OpenGL context current, request v-sync
+# Set up window using GLFW
 glfw.init()
-window = glfw.create_window(1200, 900, "Demo", None, None)
+window = glfw.create_window(1200, 900, "Biped Robot Simulation", None, None)
 glfw.make_context_current(window)
 glfw.swap_interval(1)
 
-# Initialize visualization data structures
+# Initialize visualization tools
 mj.mjv_defaultCamera(cam)
 mj.mjv_defaultOption(opt)
 scene = mj.MjvScene(model, maxgeom=10000)
 context = mj.MjrContext(model, mj.mjtFontScale.mjFONTSCALE_150.value)
 
-# Install GLFW mouse and keyboard callbacks
+# Set mouse and keyboard callbacks
 glfw.set_key_callback(window, keyboard)
 glfw.set_cursor_pos_callback(window, mouse_move)
 glfw.set_mouse_button_callback(window, mouse_button)
 glfw.set_scroll_callback(window, scroll)
 
-# Set camera configuration
+# Configure the camera settings
 cam.azimuth = 120.89
 cam.elevation = -15.81
 cam.distance = 8.0
 cam.lookat = np.array([0.0, 0.0, 2.0])
 
-# Turn the direction of gravity to simulate a ramp
+# Set custom gravity for ramp simulation
 model.opt.gravity[0] = 9.81 * np.sin(0.1)
 model.opt.gravity[2] = -9.81 * np.cos(0.1)
 
-# Initialize the controller
+# Initialize controller
 init_controller(model, data)
-
-# Set the controller (uncomment if needed)
-# mj.set_mjcb_control(controller)
 
 # Main simulation loop
 while not glfw.window_should_close(window):
     simstart = data.time
+    while data.time - simstart < 1.0/60.0:  # Simulate at 60 FPS
+        mj.mj_step(model, data)  # Perform simulation step
+        controller(model, data)  # Apply control
 
-    while (data.time - simstart < 1.0/60.0):
-        # Perform a simulation step
-        mj.mj_step(model, data)
-        # Apply control
-        controller(model, data)
-
-    if (data.time >= simend):
+    if data.time >= simulation_duration:
         break
 
-    # Get framebuffer viewport
+    # Render the simulation
     viewport_width, viewport_height = glfw.get_framebuffer_size(window)
     viewport = mj.MjrRect(0, 0, viewport_width, viewport_height)
-
-    # Show joint frames
-    opt.flags[mj.mjtVisFlag.mjVIS_JOINT] = 1
-
-    # Update scene and render
-    cam.lookat[0] = data.qpos[0]  # Camera follows the robot
     mj.mjv_updateScene(model, data, opt, None, cam, mj.mjtCatBit.mjCAT_ALL.value, scene)
     mj.mjr_render(viewport, scene, context)
 
-    # Swap OpenGL buffers (blocking call due to v-sync)
-    glfw.swap_buffers(window)
+    glfw.swap_buffers(window)  # Swap OpenGL buffers
+    glfw.poll_events()  # Process pending GUI events
 
-    # Process pending GUI events, call GLFW callbacks
-    glfw.poll_events()
-
-# Show joint frames
-opt.flags[mj.mjtVisFlag.mjVIS_JOINT] = 0  # Disable joint visualization
-
+# Clean up
 glfw.terminate()
